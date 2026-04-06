@@ -1,0 +1,52 @@
+# Smart Outfit Recommendation - Sensor Layer Configuration
+# Configurable frequency (seconds) and dispatch rate (batch size / interval)
+
+sensors:
+  temperature:
+    enabled: true
+    read_interval_sec: 10
+    dispatch_interval_sec: 20
+    dispatch_batch_size: 2
+    unit: celsius
+    range: [ -5, 45 ]
+
+  humidity:
+    enabled: true
+    read_interval_sec: 10
+    dispatch_interval_sec: 20
+    dispatch_batch_size: 2
+    unit: percent
+    range: [ 0, 100 ]
+
+  uv_index:
+    enabled: true
+    read_interval_sec: 20
+    dispatch_interval_sec: 30
+    dispatch_batch_size: 1
+    unit: index
+    range: [ 0, 11 ]
+
+  air_quality:
+    enabled: true
+    read_interval_sec: 16
+    dispatch_interval_sec: 32
+    dispatch_batch_size: 2
+    unit: aqi
+    range: [ 0, 500 ]
+
+  activity:
+    enabled: true
+    read_interval_sec: 12
+    dispatch_interval_sec: 24
+    dispatch_batch_size: 1
+    levels: [ "sedentary", "light", "moderate", "active", "intense" ]
+
+# Fog node endpoint (sensors send data here)
+fog:
+  url: "http://localhost:8001"
+  timeout_sec: 5
+
+# Optional: real sensor APIs (leave empty to use mock)
+real_sensors:
+  # openweathermap_api_key: ""
+  # purple_air_station_id: ""

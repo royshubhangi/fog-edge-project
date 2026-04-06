@@ -1,0 +1,28 @@
+{
+  "family": "smart-outfit-fog-node",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::121332300574:role/LabRole",
+  "taskRoleArn": "arn:aws:iam::121332300574:role/LabRole",
+  "containerDefinitions": [
+    {
+      "name": "fog-node",
+      "image": "121332300574.dkr.ecr.us-east-1.amazonaws.com/smart-outfit/fog-node:latest",
+      "essential": true,
+      "portMappings": [{ "containerPort": 8001, "protocol": "tcp" }],
+      "environment": [
+        { "name": "CLOUD_BACKEND_URL", "value": "http://smart-outfit-alb-1008387426.us-east-1.elb.amazonaws.com" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-region": "us-east-1",
+          "awslogs-group": "/ecs/smart-outfit/fog-node",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

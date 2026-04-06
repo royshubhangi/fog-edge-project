@@ -1,0 +1,47 @@
+# Smart Outfit Recommendation - Full stack
+# Run: docker compose up -d
+# Set SQS_QUEUE_URL (AWS SQS queue URL) for queue-based ingest; otherwise ingest uses sync DB write.
+# Cloud backend: http://localhost:8000
+# Fog node: http://localhost:8001
+
+version: "3.8"
+services:
+  cloud-backend:
+    build: ./cloud-backend
+    ports: ["8000:8000"]
+    environment:
+      SQS_QUEUE_URL: ${SQS_QUEUE_URL:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      DYNAMODB_TABLE_RECOMMENDATIONS: ${DYNAMODB_TABLE_RECOMMENDATIONS:-outfit-recommendations}
+      DYNAMODB_TABLE_SENSORS: ${DYNAMODB_TABLE_SENSORS:-outfit-sensor-snapshots}
+      FOG_NODE_URL: http://fog-node:8001
+
+  cloud-worker:
+    build: ./cloud-backend
+    command: python -m app.worker
+    environment:
+      SQS_QUEUE_URL: ${SQS_QUEUE_URL:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      DYNAMODB_TABLE_RECOMMENDATIONS: ${DYNAMODB_TABLE_RECOMMENDATIONS:-outfit-recommendations}
+      DYNAMODB_TABLE_SENSORS: ${DYNAMODB_TABLE_SENSORS:-outfit-sensor-snapshots}
+    depends_on: [cloud-backend]
+
+  fog-node:
+    build: ./fog-node
+    ports: ["8001:8001"]
+    environment:
+      CLOUD_BACKEND_URL: http://cloud-backend:8000
+    depends_on: [cloud-backend]
+
+  sensor-simulator:
+    build: ./sensors
+    environment:
+      FOG_URL: http://fog-node:8001
+    depends_on: [fog-node]
+

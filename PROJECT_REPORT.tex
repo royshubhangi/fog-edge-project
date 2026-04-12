@@ -1,0 +1,367 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\title{Smart Outfit Recommendation Based on Environment:\\A Fog--Edge--Cloud Application}
+
+\author{\IEEEauthorblockN{Shubhangi Roy}
+\IEEEauthorblockA{\textit{Student ID: x24222127}\\
+\textit{Module: Fog \& Edge Computing / Scalable Cloud Programming}\\
+\textit{Programme: MSc in Cloud Computing}\\
+\textit{National College of Ireland}\\
+\textit{Date: 10/04/2026}
+}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This project implements a distributed smart-outfit recommendation system using a fog and edge computing model alongside a cloud backend. The application comprises four cooperating services: a configurable sensor simulator (edge), a fog node for near-source processing, a cloud backend for storage and analytics, and a worker service for asynchronous queue processing. The end-to-end data path is sensors $\rightarrow$ fog ingest $\rightarrow$ cloud ingest queue $\rightarrow$ worker persistence $\rightarrow$ dashboard visualization. The design supports local development (Docker Compose) and cloud deployment (AWS ECS Fargate and Azure Container Apps) while preserving the same service contracts. The main result is a reference architecture that separates latency-sensitive decision logic from scalable persistence: recommendation logic (comfort index, fabric selection, clothing suggestions) executes on demand at the fog layer, while cloud ingest is decoupled through Amazon SQS to allow horizontal scaling of workers and improved resilience under bursty traffic. A web dashboard provides latest readings, time-series trends, and recommendation history. The paper discusses trade-offs around eventual consistency after queueing, external queue dependency, and deployment constraints such as multi-architecture container images on Fargate.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Fog computing, edge computing, cloud computing, FastAPI, Amazon SQS, AWS ECS, Docker, microservices, IoT, asynchronous processing.
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Environmental and behavioral conditions strongly influence clothing comfort and safety. Typical centralized recommendations often omit continuously streamed local context such as activity intensity, UV level, or air quality. This project addresses that gap with a fog--edge--cloud architecture: sensing and first-stage processing occur near data generation, while long-term storage, analytics, and the user-facing dashboard run in the cloud.
+
+Fog and edge paradigms suit this domain because sensor events are continuous and potentially high volume; some decisions benefit from low end-to-end latency; and cloud resources should remain elastic rather than tightly coupled to ingest spikes. These motivations align with the literature on edge and fog systems, which emphasizes locality, reduced backhaul, and context-aware processing~\cite{bonomi2012,shi2016}.
+
+\subsection{Project Objectives}
+The primary objectives are:
+\begin{enumerate}
+  \item Build a configurable multi-sensor edge simulator producing realistic periodic readings.
+  \item Implement a fog node that aggregates latest readings and provides outfit recommendations on demand.
+  \item Implement a cloud backend with scalable ingest using queue-based decoupling (Amazon SQS).
+  \item Persist and expose sensor and recommendation data through APIs and a dashboard.
+  \item Containerize all components and document reproducible deployment to AWS (ECS Fargate, ECR, ALB) and Azure (Container Apps).
+  \item Provide critical justification for the chosen architecture and design patterns (fog partitioning, producer--consumer ingest, stateless APIs).
+\end{enumerate}
+
+\subsection{Project Significance}
+The project demonstrates integration of edge simulation, fog processing, and cloud-native services into a coherent pipeline; illustrates container-based DevOps practices (image build, registry push, task/service definitions); and provides a basis for discussing operational and scalability trade-offs relevant to IoT-style and distributed cloud careers.
+
+\subsection{Related Work}
+Fog computing extends cloud capabilities to the network edge to support latency-sensitive and context-rich applications~\cite{bonomi2012}. Subsequent work has framed edge computing as a complement to centralized clouds for IoT analytics~\cite{shi2016}. Container orchestration at the edge has been surveyed as an enabler for portable workloads across heterogeneous infrastructure~\cite{pahl2015}, which motivates the container-first implementation used here.
+
+Personalized or context-aware recommendation systems are widely studied in e-commerce and media; fewer public references combine \emph{environmental} sensor streams with outfit advice in a tiered fog--cloud deployment. This project therefore contributes a small, reproducible \emph{systems} artifact: explicit service boundaries, queue-backed ingest, and a documented path from Docker Compose to managed cloud orchestration, rather than a new machine-learning model for fashion. The comfort model is rule-based and tunable, prioritizing transparency and deployment pedagogy over predictive accuracy.
+
+\section{Project Requirements}
+
+\subsection{Functional Requirements}
+\textbf{Sensor and ingest:}
+\begin{itemize}
+  \item The system shall simulate five sensor dimensions: outdoor temperature, humidity, UV index, air quality, and user activity level.
+  \item Each sensor shall support configurable read interval, dispatch interval, and batch size via \texttt{sensors/config.yaml}.
+  \item Data shall flow from sensors to the fog node \texttt{/ingest} endpoint, then to the cloud \texttt{/api/ingest}.
+\end{itemize}
+
+\subsubsection{Sensor types in the edge layer}
+The simulator instantiates one asynchronous task per enabled sensor type in \texttt{config.yaml}. Table~\ref{tab:sensortypes} summarizes the five logical sensors, their physical meaning, units, and how values are represented in software (the \texttt{activity} sensor emits a categorical level rather than a continuous scalar).
+
+\begin{table}[htbp]
+\centering
+\caption{Sensor types simulated at the edge layer.}
+\label{tab:sensortypes}
+\begin{tabular}{@{}p{0.22\linewidth}p{0.68\linewidth}@{}}
+\toprule
+\textbf{Sensor key} & \textbf{Description and representation} \\
+\midrule
+\texttt{temperature} & Outdoor air temperature; degrees Celsius (\texttt{unit: celsius}), simulated within a configurable numeric \texttt{range} (default roughly $-5$--$45\,^{\circ}\mathrm{C}$). \\
+\texttt{humidity} & Relative humidity; percent (\texttt{unit: percent}), range $0$--$100$. \\
+\texttt{uv\_index} & Ultraviolet index; unitless UV scale (\texttt{unit: index}), range $0$--$11$. \\
+\texttt{air\_quality} & Air quality index (\texttt{unit: aqi}), range $0$--$500$. \\
+\texttt{activity} & User activity intensity; discrete level from a fixed list (\texttt{levels}), e.g.\ sedentary through intense, rather than a floating-point sensor reading. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Fog and recommendation:}
+\begin{itemize}
+  \item The fog node shall maintain the latest reading per sensor type and compute a comfort index (0--100), recommended fabric type, and short clothing suggestions.
+  \item Recommendations shall be computed \emph{on demand} (e.g., dashboard ``Suggest outfit''), not on every ingest, to avoid unnecessary computation.
+\end{itemize}
+
+\textbf{Cloud, API, and dashboard:}
+\begin{itemize}
+  \item The cloud backend shall enqueue ingest payloads to SQS when \texttt{SQS\_QUEUE\_URL} is set, or fall back to synchronous database write when unset.
+  \item A worker shall poll SQS and persist sensor snapshots; APIs shall expose latest values, time series, recommendation proxying, and history.
+  \item The dashboard shall display gauges, charts, and recommendation history.
+\end{itemize}
+
+\subsection{Non-Functional Requirements}
+\textbf{Performance:} API and dashboard responses should remain acceptable under typical interactive use; ingest path latency may include short queueing delay.
+
+\textbf{Scalability:} Ingest shall be decoupled from persistence via SQS; multiple worker tasks shall be able to drain the queue in parallel.
+
+\textbf{Reliability:} Temporary downstream slowness shall be absorbed by the queue where configured rather than failing the ingest HTTP request immediately.
+
+\textbf{Portability:} The same container images shall run under Docker Compose locally and under ECS Fargate or Azure Container Apps with environment-variable configuration.
+
+\textbf{Maintainability:} Service boundaries (sensors, fog, API, worker) shall remain explicit; configuration shall be externalized (YAML and environment variables).
+
+\subsection{Technical Constraints}
+\textbf{Languages and frameworks:} Python~3; FastAPI and Uvicorn for fog and cloud HTTP services; Pydantic for validation~\cite{fastapi}.
+
+\textbf{Libraries:} \texttt{httpx} for inter-service calls; \texttt{boto3}/\texttt{aioboto3} for AWS integration; \texttt{PyYAML} and \texttt{aiohttp} for the sensor simulator.
+
+\textbf{Deployment:} Docker images for all services~\cite{docker}; AWS ECS Fargate with Application Load Balancers for cloud and fog APIs where documented~\cite{ecs}; optional Azure Container Apps path. Apple Silicon builds for Fargate may require \texttt{linux/amd64} images.
+
+\section{Architectural Design}
+
+\subsection{Architecture Overview}
+The system is a variation of a layered edge--fog--cloud architecture: the \emph{edge} tier (sensor simulator), the \emph{fog} tier (ingestion and on-demand recommendation), and the \emph{cloud} tier (queue-backed ingest, persistence, worker, dashboard). Fig.~\ref{fig:arch} summarizes the logical data plane.
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\linewidth}{\centering\vspace{1.2em}\textbf{Logical architecture}\\[0.5em]\small Sensors $\rightarrow$ Fog \texttt{/ingest} $\rightarrow$ Cloud \texttt{/api/ingest} $\rightarrow$ SQS $\rightarrow$ Worker $\rightarrow$ DB/DynamoDB; Dashboard $\rightarrow$ Cloud \texttt{/api/recommend} $\rightarrow$ Fog \texttt{/recommend}.\vspace{1.2em}}}
+\caption{High-level fog--edge--cloud data and control flow.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Justification}
+\textbf{Fog on-demand recommendation:} Computing comfort and fabric only when the user requests an outfit avoids wasteful CPU on every sensor tick and matches interaction semantics. If recommendations were computed per ingest, fog CPU and cloud-side history would scale linearly with sensor frequency even when no user is viewing the dashboard.
+
+\textbf{SQS-backed ingest:} Decouples the HTTP ingest path from database write throughput, smooths bursts, and enables horizontal scaling of workers~\cite{sqsdocs,azurepatterns}.
+
+\textbf{Containerized microservices:} Independent deploy and scale of API, worker, fog, and sensors; aligns with portable edge--cloud deployment~\cite{pahl2015}.
+
+\subsection{Layered Structure}
+\textbf{Edge:} Configurable sensor simulators dispatch batches to the fog URL.
+
+\textbf{Fog:} FastAPI service exposing \texttt{/ingest} and \texttt{/recommend}; aggregates state and forwards ingest to the cloud.
+
+\textbf{Cloud application:} FastAPI \texttt{/api/ingest} enqueues or writes synchronously; dashboard and analytics routes; proxies recommendation to fog.
+
+\textbf{Data and async tier:} Worker process consumes SQS and writes durable records; storage may be SQLite locally or DynamoDB in cloud deployments per configuration.
+
+\subsection{Key Patterns}
+\textbf{Producer--consumer and queue-based load leveling:} Ingest API and worker separate concerns and protect the store under load~\cite{azurepatterns}.
+
+\textbf{Stateless API services:} No session state on API containers; scaling and replacement are straightforward~\cite{newman2021,fowler}.
+
+\textbf{Configuration-as-data:} \texttt{config.yaml} and environment variables avoid hard-coded endpoints.
+
+\textbf{Backend-for-fog proxy:} Cloud \texttt{/api/recommend} calls fog \texttt{/recommend} so the browser talks to one origin while fog retains domain logic.
+
+\subsection{Trade-off Summary}
+Table~\ref{tab:tradeoffs} condenses major design decisions and their consequences. The chosen compromises favor demonstrable scalability and clear separation of concerns over minimal latency on the ingest path and maximal simplicity of deployment.
+
+\begin{table}[htbp]
+\centering
+\caption{Architectural trade-offs addressed in the design.}
+\label{tab:tradeoffs}
+\begin{tabular}{@{}p{0.22\linewidth}p{0.32\linewidth}p{0.38\linewidth}@{}}
+\toprule
+\textbf{Decision} & \textbf{Benefit} & \textbf{Cost / risk} \\
+\midrule
+On-demand fog recommendation & CPU scales with user actions, not sensor rate & Extra hop when user requests advice \\
+SQS + worker ingest & Absorbs bursts; scales consumers & Short eventual delay before DB reflects ingest \\
+Stateless APIs & Elastic horizontal scaling & All state in DB/queue/env; careful config \\
+SQLite (local) vs.\ DynamoDB (cloud) & Fast local dev; managed cloud store & Behavioral and performance differences \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Scalability and Resilience}
+ECS Fargate and Container Apps allow replica scaling for API and worker; SQS provides buffering during spikes. Failures in optional upstream services or misconfigured queue URLs must be handled via health checks, logging, and fallback paths (sync DB write when queue is unset).
+
+\section{Analysis of Cloud-Based Services}
+
+\subsection{Amazon SQS}
+\textbf{Purpose:} Decouple cloud ingest from persistence and absorb bursty sensor traffic.
+
+\textbf{Advantages:} Managed queue, elasticity, integration with IAM and worker consumers.
+
+\textbf{Disadvantages:} Operational dependency; eventual consistency between enqueue and dashboard visibility; requires correct permissions and queue URL configuration.
+
+\textbf{Justification:} Natural fit for scalable ingest and multiple workers~\cite{sqsdocs}.
+
+\subsection{AWS ECS on Fargate and Application Load Balancer}
+\textbf{Purpose:} Run containerized cloud backend, fog node, worker, and sensor simulator without managing EC2 fleets; ALBs expose HTTP APIs with health checks.
+
+\textbf{Advantages:} Serverless-style operations for containers, integration with VPC, security groups, and CloudWatch logs.
+
+\textbf{Disadvantages:} Cold start and task placement latency; image platform must match Fargate (\texttt{linux/amd64} in typical labs); networking and security group wiring add complexity.
+
+\textbf{Justification:} Matches microservice decomposition and documented deployment path in the project.
+
+\subsection{Amazon DynamoDB (Cloud Persistence)}
+\textbf{Purpose:} Store sensor snapshots and recommendation history in managed NoSQL form when deployed with DynamoDB table names in environment variables.
+
+\textbf{Advantages:} On-demand billing option, regional availability, simple key-based access patterns when modeled appropriately.
+
+\textbf{Disadvantages:} Schema and access patterns must be designed for query needs; differs from local SQLite behavior.
+
+\textbf{Justification:} Aligns with cloud-native persistence for coursework-scale workloads alongside SQS.
+
+\subsection{Azure Container Apps (Alternative Path)}
+\textbf{Purpose:} Deploy the same images with external ingress, autoscaling, and optional KEDA-based scaling for queue depth.
+
+\textbf{Advantages:} Managed environment, HTTP scaling, multi-cloud option for the same codebase.
+
+\textbf{Disadvantages:} Still depends on external SQS if that queue remains the ingest backbone in the design.
+
+\textbf{Justification:} Demonstrates portability beyond a single hyperscaler.
+
+\section{Data Model}
+
+\subsection{Pydantic Models}
+The API defines validated request and response shapes for sensor payloads, ingest messages, and recommendation results. Shared models keep OpenAPI documentation and client expectations consistent across fog and cloud services~\cite{fastapi}.
+
+\subsection{Persistence (SQLite and DynamoDB)}
+\textbf{Local development:} SQLite file (e.g., \texttt{DB\_PATH}) for snapshots and history when running outside full AWS data stores.
+
+\textbf{Cloud:} DynamoDB tables for sensor snapshots and recommendations (table names supplied via environment variables in compose and task definitions), with keys appropriate to time-series and history queries as implemented in the application layer.
+
+\subsection{Sensor Configuration Schema}
+Edge behavior is driven by \texttt{sensors/config.yaml}. Table~\ref{tab:sensorcfg} lists the main tunable parameters per sensor type. Adjusting read and dispatch intervals allows stress-testing the fog forwarder and the SQS-backed pipeline without code changes.
+
+\begin{table}[htbp]
+\centering
+\caption{Representative sensor configuration parameters (per sensor type).}
+\label{tab:sensorcfg}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Parameter} & \textbf{Role} \\
+\midrule
+\texttt{enabled} & Toggle sensor participation \\
+\texttt{read\_interval\_sec} & Sampling cadence \\
+\texttt{dispatch\_interval\_sec} & How often batches POST to fog \\
+\texttt{dispatch\_batch\_size} & Events per POST \\
+\texttt{ranges} / levels & Bounds for simulated values \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Implementation Details}
+
+\subsection{FastAPI Services and Inter-Service HTTP}
+The cloud backend and fog node use FastAPI with Uvicorn~\cite{fastapi}. The cloud service mounts routes for health, ingest, analytics, recommendation proxying, and static dashboard assets. Inter-service calls use \texttt{httpx} with configurable base URLs (\texttt{FOG\_NODE\_URL}, \texttt{CLOUD\_BACKEND\_URL}). Health routes (\texttt{/health} on fog, \texttt{/api/health} on cloud) support load balancer and operations checks~\cite{ecs}.
+
+\subsection{Sensor Simulator}
+\texttt{run\_sensors.py} loads \texttt{config.yaml}, starts asynchronous tasks per enabled sensor, and POSTs batches to the fog base URL (overridable via \texttt{FOG\_URL} in Docker).
+
+\subsection{Fog Node Logic}
+Modules for comfort index and fabric recommendation encapsulate domain rules; the fog application keeps latest readings in memory for fast \texttt{/recommend} responses.
+
+\subsection{Comfort Index and Fabric Rules}
+The comfort score is a transparent weighted combination of normalized sensor inputs. Let $T'$, $H'$, $U'$, and $A'$ denote normalized values in $[0,1]$ for temperature, humidity, UV, and air quality respectively, and let $\alpha \in (0,1]$ be an activity factor (lower for intense activity). The implementation uses
+\begin{equation}
+C = 100 \cdot \min\!\left(1,\, \max\!\left(0,\, \alpha \cdot \bigl(0.3 T' + 0.2 H' + 0.25 U' + 0.25 A'\bigr)\right)\right),
+\end{equation}
+rounded to one decimal. Piecewise functions map raw readings to $T'$--$A'$ (e.g., temperature peaks around the low-twenties Celsius; UV and AQI monotonically reduce comfort as they rise). Fabric choice and short textual suggestions use rule chains over temperature, humidity, and UV categories---for example, cold conditions bias toward insulating fabrics; high UV emphasizes protective layers---implemented in dedicated Python modules for readability and testing.
+
+\subsection{Queue and Worker}
+\texttt{/api/ingest} pushes to SQS when configured; \texttt{python -m app.worker} polls the queue and writes to the database. Without \texttt{SQS\_QUEUE\_URL}, ingest may write directly to the database synchronously for simpler local runs.
+
+\subsection{Dashboard}
+The dashboard consumes REST endpoints for latest readings, series, and recommendation history, and triggers on-demand outfit suggestion through the cloud API.
+
+\section{Evaluation and Validation}
+
+\subsection{Method}
+Validation combined local integration testing and manual cloud deployment checks documented in the repository. The primary success criterion was \emph{correct multi-hop behavior}: simulated sensors produce readings; fog holds authoritative latest state; cloud enqueues or persists; worker drains the queue; dashboard reflects history and triggers fog-backed recommendations.
+
+\subsection{Observed Outcomes}
+With Docker Compose, end-to-end runs confirmed: (1)~steady sensor POSTs to fog \texttt{/ingest}; (2)~cloud \texttt{/api/ingest} accepting forwarded payloads; (3)~when SQS is configured, queue depth visible in AWS and worker logs showing consumption; (4)~dashboard gauges and charts updating; (5)~``Suggest outfit'' returning consistent comfort index and fabric strings from fog. Under bursty dispatch settings (short intervals, large batch sizes), the queue absorbed spikes without blocking the fog-to-cloud HTTP call indefinitely, matching the intended load-leveling behavior.
+
+\subsection{Limitations of the Evaluation}
+Load testing was not automated with a dedicated harness; results are qualitative. Latency distributions and cost figures were not measured systematically. The comfort model is not validated against human subjects or external weather APIs---it is a deterministic heuristic suitable for architecture demonstration.
+
+\section{Security and Operational Considerations}
+
+The coursework deployment prioritizes function and repeatability over production hardening. In a real deployment, TLS termination on load balancers, least-privilege IAM for workers and APIs, secret rotation, and network segmentation would be mandatory. The current design exposes the importance of \emph{infrastructure contracts}: queue URLs, table names, regions, and inter-service URLs must match across task definitions and environment variables; misconfiguration surfaces as silent data loss or health-check failures rather than compile-time errors.
+
+From an abuse perspective, unauthenticated ingest endpoints (if exposed publicly) would allow spoofed readings; recommendation endpoints should be rate-limited and tied to authenticated users. These items are noted as follow-up work alongside automated CI pipelines and deeper observability.
+
+\section{Continuous Integration, Delivery, and Deployment}
+
+\subsection{Documented Deployment Procedure (AWS)}
+The repository documents building images with Docker Buildx for \texttt{linux/amd64}, pushing to Amazon ECR, registering ECS task definitions (\texttt{cloud-taskdef.json}, \texttt{fog-taskdef.json}, \texttt{worker-taskdef.json}, \texttt{sensors-taskdef.json}), creating ECS services, and attaching ALBs with health checks on \texttt{/api/health} and \texttt{/health}.
+
+\subsection{Azure Container Apps}
+\texttt{deploy/azure-container-apps.md} describes image push to a registry, creation of a Container Apps environment, deployment of cloud, fog, sensors, and optional worker with autoscaling notes.
+
+\subsection{Secrets and Configuration}
+AWS credentials, queue URL, region, and table names should be supplied via environment variables or secrets managers in real deployments---not committed to the repository. GitHub repository URL for the project: \texttt{<ADD\_YOUR\_GITHUB\_REPOSITORY\_URL\_HERE>}.
+
+\subsection{CI/CD Automation (Recommended)}
+Path-filtered GitHub Actions workflows could run lint and tests, build and push images to ECR or ACR on \texttt{main}, and update task definitions or Container Apps revisions. The current baseline is manual, documentation-driven CD suitable for extension to full CI/CD.
+
+\subsection{Application URL}
+After deployment, the cloud dashboard is available at the cloud ALB DNS (or Container Apps FQDN) on the configured port/path, e.g.\ \texttt{http://<CLOUD\_ALB\_DNS>/}.
+
+\section{Conclusions and Reflections}
+
+\subsection{Key Findings}
+\begin{enumerate}
+  \item Fog--edge partitioning improves clarity: on-demand recommendation at the fog avoids overloading cloud ingest.
+  \item Asynchronous ingest via SQS and workers is a practical baseline for burst tolerance and scale-out.
+  \item Container-first development supports parity between Docker Compose and cloud orchestrators.
+  \item Tunable sensor intervals make it straightforward to stress-test queue and worker behavior.
+\end{enumerate}
+
+\subsection{Challenges and Mitigations}
+\textbf{Platform images:} Fargate expects \texttt{linux/amd64}; use Buildx to avoid pull errors on ARM dev machines.
+
+\textbf{Service wiring:} ALB DNS names and environment variables (\texttt{FOG\_NODE\_URL}, \texttt{CLOUD\_BACKEND\_URL}) must be updated and redeployed coherently.
+
+\textbf{Consistency:} Queue-backed ingest implies short lag before persistence; document this for dashboard users.
+
+\subsection{Future Improvements}
+Add automated GitHub Actions pipelines, structured logging and metrics (CloudWatch dashboards), DynamoDB access pattern review for heavy queries, TLS termination and stricter IAM least privilege, integration tests in CI, and optional tracing across fog and cloud calls.
+
+\subsection{Conclusion}
+The project shows that a deliberate split between fog (context and on-demand reasoning) and cloud (durability, APIs, visualization), combined with queue-based ingest, yields a maintainable and demonstrably scalable pattern for environment-driven applications. Cloud delivery rests on reproducible images, correct infrastructure contracts, and honest evaluation of consistency and dependency trade-offs.
+
+\section*{Acknowledgment}
+This project was completed as part of the Fog \& Edge / Scalable Cloud Programming module, MSc in Cloud Computing, National College of Ireland.
+
+\begin{thebibliography}{00}
+\bibitem{bonomi2012}
+F. Bonomi, R. Milito, J. Zhu, and S. Addepalli, ``Fog computing and its role in the internet of things,'' in \emph{Proc. 1st MCC Workshop Mobile Cloud Comput.}, 2012, pp. 13--16.
+
+\bibitem{shi2016}
+W. Shi and S. Dustdar, ``The promise of edge computing,'' \emph{Computer}, vol.~49, no.~5, pp.~78--81, May 2016.
+
+\bibitem{pahl2015}
+C. Pahl and B. Lee, ``Containers and clusters for edge cloud architectures---a technology review,'' in \emph{Proc. 3rd Int. Conf. Future Internet Things Cloud}, 2015, pp.~379--386.
+
+\bibitem{sqsdocs}
+Amazon Web Services, ``What is Amazon SQS?,'' AWS Documentation, 2026. [Online]. Available: \url{https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html}
+
+\bibitem{azurepatterns}
+Microsoft, ``Queue-Based Load Leveling pattern,'' Azure Architecture Center, 2026. [Online]. Available: \url{https://learn.microsoft.com/azure/architecture/patterns/queue-based-load-leveling}
+
+\bibitem{newman2021}
+S. Newman, \emph{Building Microservices}, 2nd ed. O'Reilly Media, 2021.
+
+\bibitem{fowler}
+M. Fowler, ``Microservices,'' 2026. [Online]. Available: \url{https://martinfowler.com/articles/microservices.html}
+
+\bibitem{fastapi}
+T. Ram\'irez et al., ``FastAPI,'' 2026. [Online]. Available: \url{https://fastapi.tiangolo.com/}
+
+\bibitem{docker}
+Docker Inc., ``Docker Documentation,'' 2026. [Online]. Available: \url{https://docs.docker.com/}
+
+\bibitem{ecs}
+Amazon Web Services, ``Amazon ECS Developer Guide,'' AWS Documentation, 2026. [Online]. Available: \url{https://docs.aws.amazon.com/ecs/}
+\end{thebibliography}
+
+\end{document}

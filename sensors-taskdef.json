@@ -1,7 +1,9 @@
 {
   "family": "smart-outfit-sensor-simulator",
   "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
   "cpu": "256",
   "memory": "512",
   "executionRoleArn": "arn:aws:iam::121332300574:role/LabRole",
@@ -12,7 +14,10 @@
       "image": "121332300574.dkr.ecr.us-east-1.amazonaws.com/smart-outfit/sensor-simulator:latest",
       "essential": true,
       "environment": [
-        { "name": "FOG_URL", "value": "http://smart-outfit-fog-alb-716493326.us-east-1.elb.amazonaws.com" }
+        {
+          "name": "FOG_URL",
+          "value": "http://smart-outfit-fog-alb-2066979604.us-east-1.elb.amazonaws.com"
+        }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
@@ -23,5 +28,9 @@
         }
       }
     }
-  ]
+  ],
+  "runtimePlatform": {
+    "operatingSystemFamily": "LINUX",
+    "cpuArchitecture": "ARM64"
+  }
 }

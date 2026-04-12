@@ -16,12 +16,23 @@ on:
       - 'sensors/**'
       - '.github/workflows/ecs-deploy.yml'
   workflow_dispatch:
+    inputs:
+      services:
+        description: Which images to build/push and ECS services to roll (worker uses the cloud-backend image)
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - cloud-backend
+          - worker
+          - fog-node
+          - sensor-simulator
 
 env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: 121332300574.dkr.ecr.us-east-1.amazonaws.com
   ECS_CLUSTER: smart-outfit
-  # Must match your task definition image names
   IMAGE_CLOUD: smart-outfit/cloud-backend
   IMAGE_FOG: smart-outfit/fog-node
   IMAGE_SENSORS: smart-outfit/sensor-simulator
@@ -59,6 +70,65 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve deploy targets
+        id: pick
+        run: |
+          # workflow_dispatch: use chosen option; push/schedule: default all
+          S="${{ inputs.services || 'all' }}"
+          echo "choice=$S" >> "$GITHUB_OUTPUT"
+          case "$S" in
+            all)
+              echo "build_cloud=true" >> "$GITHUB_ENV"
+              echo "build_fog=true" >> "$GITHUB_ENV"
+              echo "build_sensors=true" >> "$GITHUB_ENV"
+              echo "rollout_cloud=true" >> "$GITHUB_ENV"
+              echo "rollout_worker=true" >> "$GITHUB_ENV"
+              echo "rollout_fog=true" >> "$GITHUB_ENV"
+              echo "rollout_sensors=true" >> "$GITHUB_ENV"
+              ;;
+            cloud-backend)
+              echo "build_cloud=true" >> "$GITHUB_ENV"
+              echo "build_fog=false" >> "$GITHUB_ENV"
+              echo "build_sensors=false" >> "$GITHUB_ENV"
+              echo "rollout_cloud=true" >> "$GITHUB_ENV"
+              echo "rollout_worker=true" >> "$GITHUB_ENV"
+              echo "rollout_fog=false" >> "$GITHUB_ENV"
+              echo "rollout_sensors=false" >> "$GITHUB_ENV"
+              ;;
+            worker)
+              echo "build_cloud=true" >> "$GITHUB_ENV"
+              echo "build_fog=false" >> "$GITHUB_ENV"
+              echo "build_sensors=false" >> "$GITHUB_ENV"
+              echo "rollout_cloud=false" >> "$GITHUB_ENV"
+              echo "rollout_worker=true" >> "$GITHUB_ENV"
+              echo "rollout_fog=false" >> "$GITHUB_ENV"
+              echo "rollout_sensors=false" >> "$GITHUB_ENV"
+              ;;
+            fog-node)
+              echo "build_cloud=false" >> "$GITHUB_ENV"
+              echo "build_fog=true" >> "$GITHUB_ENV"
+              echo "build_sensors=false" >> "$GITHUB_ENV"
+              echo "rollout_cloud=false" >> "$GITHUB_ENV"
+              echo "rollout_worker=false" >> "$GITHUB_ENV"
+              echo "rollout_fog=true" >> "$GITHUB_ENV"
+              echo "rollout_sensors=false" >> "$GITHUB_ENV"
+              ;;
+            sensor-simulator)
+              echo "build_cloud=false" >> "$GITHUB_ENV"
+              echo "build_fog=false" >> "$GITHUB_ENV"
+              echo "build_sensors=true" >> "$GITHUB_ENV"
+              echo "rollout_cloud=false" >> "$GITHUB_ENV"
+              echo "rollout_worker=false" >> "$GITHUB_ENV"
+              echo "rollout_fog=false" >> "$GITHUB_ENV"
+              echo "rollout_sensors=true" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Unknown services choice: $S" >&2
+              exit 1
+              ;;
+          esac
+          echo "Deploy choice: $S (see next steps for conditional build/rollout)"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -77,23 +147,36 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push images (linux/arm64)
+      - name: Build and push cloud-backend image (linux/arm64)
+        if: env.build_cloud == 'true'
         run: |
           docker buildx build --platform linux/arm64 \
             -t $ECR_REGISTRY/$IMAGE_CLOUD:latest \
             ./cloud-backend --push
+
+      - name: Build and push fog-node image (linux/arm64)
+        if: env.build_fog == 'true'
+        run: |
           docker buildx build --platform linux/arm64 \
             -t $ECR_REGISTRY/$IMAGE_FOG:latest \
             ./fog-node --push
+
+      - name: Build and push sensor-simulator image (linux/arm64)
+        if: env.build_sensors == 'true'
+        run: |
           docker buildx build --platform linux/arm64 \
             -t $ECR_REGISTRY/$IMAGE_SENSORS:latest \
             ./sensors --push
 
       - name: Force new ECS deployment
         run: |
-          for svc in cloud-backend worker fog-node sensor-simulator; do
+          rollout() {
             aws ecs update-service --region "$AWS_REGION" \
               --cluster "$ECS_CLUSTER" \
-              --service "$svc" \
+              --service "$1" \
               --force-new-deployment
-          done
+          }
+          if [ "$rollout_cloud" = "true" ]; then rollout cloud-backend; fi
+          if [ "$rollout_worker" = "true" ]; then rollout worker; fi
+          if [ "$rollout_fog" = "true" ]; then rollout fog-node; fi
+          if [ "$rollout_sensors" = "true" ]; then rollout sensor-simulator; fi

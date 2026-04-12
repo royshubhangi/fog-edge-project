@@ -1,3 +1,6 @@
+# Expects repo root to contain ./cloud-backend, ./fog-node, ./sensors (no extra subfolder).
+# If the app lives under e.g. apps/fog-edge-project/, add per-job: defaults: run: working-directory: apps/fog-edge-project
+
 name: CI and Deploy to ECS
 
 on:
@@ -41,9 +44,6 @@ jobs:
   ci-build:
     name: CI – Docker build (amd64 smoke; no push)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: fog-edge-project
     steps:
       - uses: actions/checkout@v4
 
@@ -61,9 +61,6 @@ jobs:
     needs: ci-build
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: fog-edge-project
     permissions:
       contents: read
 

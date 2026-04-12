@@ -1,0 +1,99 @@
+name: CI and Deploy to ECS
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'cloud-backend/**'
+      - 'fog-node/**'
+      - 'sensors/**'
+      - '.github/workflows/ecs-deploy.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'cloud-backend/**'
+      - 'fog-node/**'
+      - 'sensors/**'
+      - '.github/workflows/ecs-deploy.yml'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 121332300574.dkr.ecr.us-east-1.amazonaws.com
+  ECS_CLUSTER: smart-outfit
+  # Must match your task definition image names
+  IMAGE_CLOUD: smart-outfit/cloud-backend
+  IMAGE_FOG: smart-outfit/fog-node
+  IMAGE_SENSORS: smart-outfit/sensor-simulator
+
+jobs:
+  ci-build:
+    name: CI – Docker build (amd64 smoke; no push)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fog-edge-project
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build cloud-backend
+        run: docker build -t cloud-backend:ci ./cloud-backend
+
+      - name: Build fog-node
+        run: docker build -t fog-node:ci ./fog-node
+
+      - name: Build sensors
+        run: docker build -t sensors:ci ./sensors
+
+  deploy:
+    name: CD – ECR push + ECS rollout
+    needs: ci-build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fog-edge-project
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU (for linux/arm64 on amd64 runner)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push images (linux/arm64)
+        run: |
+          docker buildx build --platform linux/arm64 \
+            -t $ECR_REGISTRY/$IMAGE_CLOUD:latest \
+            ./cloud-backend --push
+          docker buildx build --platform linux/arm64 \
+            -t $ECR_REGISTRY/$IMAGE_FOG:latest \
+            ./fog-node --push
+          docker buildx build --platform linux/arm64 \
+            -t $ECR_REGISTRY/$IMAGE_SENSORS:latest \
+            ./sensors --push
+
+      - name: Force new ECS deployment
+        run: |
+          for svc in cloud-backend worker fog-node sensor-simulator; do
+            aws ecs update-service --region "$AWS_REGION" \
+              --cluster "$ECS_CLUSTER" \
+              --service "$svc" \
+              --force-new-deployment
+          done

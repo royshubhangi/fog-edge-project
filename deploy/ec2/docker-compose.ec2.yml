@@ -1,0 +1,56 @@
+services:
+  cloud-backend:
+    build:
+      context: ../../cloud-backend
+    container_name: cloud-backend
+    restart: always
+    environment:
+      SQS_QUEUE_URL: ${SQS_QUEUE_URL:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      DYNAMODB_TABLE_RECOMMENDATIONS: ${DYNAMODB_TABLE_RECOMMENDATIONS:-outfit-recommendations}
+      DYNAMODB_TABLE_SENSORS: ${DYNAMODB_TABLE_SENSORS:-outfit-sensor-snapshots}
+      FOG_NODE_URL: http://fog-node:8001
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  cloud-worker:
+    build:
+      context: ../../cloud-backend
+    container_name: cloud-worker
+    restart: always
+    command: python -m app.worker
+    environment:
+      SQS_QUEUE_URL: ${SQS_QUEUE_URL:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      DYNAMODB_TABLE_RECOMMENDATIONS: ${DYNAMODB_TABLE_RECOMMENDATIONS:-outfit-recommendations}
+      DYNAMODB_TABLE_SENSORS: ${DYNAMODB_TABLE_SENSORS:-outfit-sensor-snapshots}
+    depends_on:
+      - cloud-backend
+
+  fog-node:
+    build:
+      context: ../../fog-node
+    container_name: fog-node
+    restart: always
+    environment:
+      CLOUD_BACKEND_URL: http://cloud-backend:8000
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      - cloud-backend
+
+  sensor-simulator:
+    build:
+      context: ../../sensors
+    container_name: sensor-simulator
+    restart: always
+    environment:
+      FOG_URL: http://fog-node:8001
+    depends_on:
+      - fog-node

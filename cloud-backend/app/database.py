@@ -2,6 +2,7 @@
 DynamoDB store for recommendations and sensor snapshots.
 Tables: outfit-recommendations (PK, SK), outfit-sensor-snapshots (sensor_type, ts).
 """
+import asyncio
 import aioboto3
 import logging
 import os
@@ -15,6 +16,14 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 TABLE_RECOMMENDATIONS = os.environ.get("DYNAMODB_TABLE_RECOMMENDATIONS", "outfit-recommendations")
 TABLE_SENSORS = os.environ.get("DYNAMODB_TABLE_SENSORS", "outfit-sensor-snapshots")
 AWS_ENDPOINT_URL = os.environ.get("AWS_ENDPOINT_URL")  # e.g. DynamoDB Local
+SENSOR_TYPES = [
+    s.strip()
+    for s in os.environ.get(
+        "SENSOR_TYPES",
+        "outdoor_temperature,humidity,uv_index,air_quality,activity_level",
+    ).split(",")
+    if s.strip()
+]
 
 _dynamo_resource = None
 
@@ -167,27 +176,26 @@ async def get_sensor_series(sensor_type: str, limit: int = 200) -> List[Dict]:
 
 
 async def get_latest_by_sensor() -> Dict[str, Any]:
-    """Latest value per sensor type via scan then group by sensor_type."""
+    """Latest value per sensor type via key query (fast path)."""
     dynamo = await _get_dynamo()
     table = await dynamo.Table(TABLE_SENSORS)
-    attr_names = {"#t": "ts", "#v": "value", "#u": "unit"}
-    resp = await table.scan(ProjectionExpression="sensor_type, #t, #v, #u", ExpressionAttributeNames=attr_names)
-    items = resp.get("Items", [])
-    while resp.get("LastEvaluatedKey"):
-        resp = await table.scan(
-            ProjectionExpression="sensor_type, #t, #v, #u",
-            ExpressionAttributeNames=attr_names,
-            ExclusiveStartKey=resp["LastEvaluatedKey"],
+
+    async def _query_latest(sensor_type: str):
+        resp = await table.query(
+            KeyConditionExpression="sensor_type = :st",
+            ExpressionAttributeValues={":st": sensor_type},
+            ScanIndexForward=False,
+            Limit=1,
         )
-        items.extend(resp.get("Items", []))
-    latest: Dict[str, Dict] = {}
-    for r in items:
-        st = r.get("sensor_type")
-        if st is None:
-            continue
-        ts = str(r.get("ts") or "")
-        value = str(r.get("value") or "")
-        unit = str(r.get("unit") or "")
-        if st not in latest or ts > latest[st]["ts"]:
-            latest[st] = {"value": value, "unit": unit, "ts": ts}
-    return latest
+        items = resp.get("Items", [])
+        if not items:
+            return sensor_type, None
+        row = items[0]
+        return sensor_type, {
+            "value": str(row.get("value") or ""),
+            "unit": str(row.get("unit") or ""),
+            "ts": str(row.get("ts") or ""),
+        }
+
+    results = await asyncio.gather(*[_query_latest(sensor_type) for sensor_type in SENSOR_TYPES])
+    return {sensor_type: data for sensor_type, data in results if data is not None}

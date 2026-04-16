@@ -125,6 +125,7 @@ All data will flow automatically. You can view the dashboard at http://localhost
 
 - **Azure**: see [deploy/azure-container-apps.md](deploy/azure-container-apps.md) (Container Apps, Redis, optional autoscaling).
 - **AWS**: see [deploy/aws-ecs.md](deploy/aws-ecs.md) (ECS Fargate, SQS).
+- **AWS low-cost option (EC2 + Nginx)**: see [deploy/ec2/README.md](deploy/ec2/README.md).
 
 The design (queue + workers, stateless API) supports horizontal scaling and FaaS (e.g. Azure Functions or Lambda for ingest/worker).
 

@@ -68,6 +68,21 @@ jobs:
             --query "InstanceInformationList[?InstanceId=='${{ secrets.EC2_INSTANCE_ID }}'].InstanceId" \
             --output text | grep -q "${{ secrets.EC2_INSTANCE_ID }}"
 
+      - name: Push .env to EC2 via SSM Parameter Store (temporary)
+        env:
+          APP_ENV_CONTENT: ${{ secrets.APP_ENV_FILE }}
+        run: |
+          if [ -z "$APP_ENV_CONTENT" ]; then
+            echo "Missing required secret: APP_ENV_FILE" >&2
+            exit 1
+          fi
+          aws ssm put-parameter \
+            --region "$AWS_REGION" \
+            --name "/smart-outfit/app/env" \
+            --type SecureString \
+            --overwrite \
+            --value "$APP_ENV_CONTENT" >/dev/null
+
       - name: Deploy on EC2 via AWS-RunShellScript
         env:
           REPO_URL: https://github.com/${{ github.repository }}.git
@@ -86,6 +101,9 @@ jobs:
                 "cd /opt/smart-outfit",
                 "git fetch --all --prune",
                 "git checkout -f '"${GITHUB_SHA}"'",
+                "sudo aws ssm get-parameter --with-decryption --region '"${AWS_REGION}"' --name /smart-outfit/app/env --query Parameter.Value --output text | sudo tee /opt/smart-outfit/.env >/dev/null",
+                "sudo chown ubuntu:ubuntu /opt/smart-outfit/.env",
+                "sudo chmod 600 /opt/smart-outfit/.env",
                 "chmod +x deploy/ec2/deploy-ec2.sh",
                 "./deploy/ec2/deploy-ec2.sh"
               ]' \

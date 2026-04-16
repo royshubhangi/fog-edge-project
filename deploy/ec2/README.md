@@ -91,6 +91,7 @@ Add these GitHub repo secrets:
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
 - `AWS_SESSION_TOKEN`
+- `APP_ENV_FILE` (full contents of `.env`; the workflow syncs this to `/opt/smart-outfit/.env` via SSM Parameter Store before each deploy)
 
 Important:
 

@@ -95,15 +95,18 @@ jobs:
             "commands": [
               "set -eu",
               "export HOME=/root",
+              "sudo mkdir -p /opt/smart-outfit",
+              "sudo chown -R ubuntu:ubuntu /opt/smart-outfit",
               "sudo git config --system --add safe.directory /opt/smart-outfit || true",
-              "if [ ! -d /opt/smart-outfit/.git ]; then sudo rm -rf /opt/smart-outfit && sudo mkdir -p /opt/smart-outfit && sudo chown ubuntu:ubuntu /opt/smart-outfit && sudo -u ubuntu git clone ${REPO_URL} /opt/smart-outfit; fi",
+              "sudo -u ubuntu git config --global --add safe.directory /opt/smart-outfit || true",
+              "if [ ! -d /opt/smart-outfit/.git ]; then sudo rm -rf /opt/smart-outfit && sudo mkdir -p /opt/smart-outfit && sudo chown -R ubuntu:ubuntu /opt/smart-outfit && sudo -u ubuntu git clone ${REPO_URL} /opt/smart-outfit; fi",
               "cd /opt/smart-outfit",
               "sudo -u ubuntu git fetch --all --prune",
               "sudo -u ubuntu git checkout -f ${GITHUB_SHA}",
               "sudo aws ssm get-parameter --region ${AWS_REGION} --name /smart-outfit/app/env --query Parameter.Value --output text > /tmp/smart-outfit.env",
               "sudo install -m 600 -o ubuntu -g ubuntu /tmp/smart-outfit.env /opt/smart-outfit/.env",
               "sudo rm -f /tmp/smart-outfit.env",
-              "sudo chmod +x deploy/ec2/deploy-ec2.sh",
+              "sudo chmod +x /opt/smart-outfit/deploy/ec2/deploy-ec2.sh",
               "sudo -u ubuntu bash -lc 'cd /opt/smart-outfit && ./deploy/ec2/deploy-ec2.sh'"
             ]
           }

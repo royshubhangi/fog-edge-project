@@ -5,9 +5,11 @@ Cloud backend: scalable web service.
 - /api/recommend: proxies to fog for on-demand outfit recommendation.
 - Dashboard: sensor data and "Suggest outfit" button.
 """
+import logging
 import os
 import httpx
 from contextlib import asynccontextmanager
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +27,36 @@ from app.database import (
 from app.queue import enqueue, queue_length
 
 FOG_NODE_URL = os.environ.get("FOG_NODE_URL", "http://localhost:8001")
+
+logger = logging.getLogger(__name__)
+
+
+def _dynamo_client_error(exc: ClientError) -> HTTPException:
+    err = exc.response.get("Error", {}) if exc.response else {}
+    code = err.get("Code", "ClientError")
+    msg = err.get("Message", str(exc))
+    logger.warning("DynamoDB error: %s — %s", code, msg)
+    return HTTPException(
+        status_code=503,
+        detail={"service": "dynamodb", "error": code, "message": msg},
+    )
+
+
+def _aws_backend_error(exc: Exception) -> HTTPException:
+    """Map boto/network errors to JSON responses (aioboto3 may raise BotoCoreError, not only ClientError)."""
+    if isinstance(exc, ClientError):
+        return _dynamo_client_error(exc)
+    if isinstance(exc, BotoCoreError):
+        logger.warning("AWS SDK error: %s", exc)
+        return HTTPException(
+            status_code=503,
+            detail={"service": "aws", "error": type(exc).__name__, "message": str(exc)},
+        )
+    logger.exception("Unexpected error in API handler")
+    return HTTPException(
+        status_code=503,
+        detail={"service": "backend", "error": type(exc).__name__, "message": str(exc)},
+    )
 
 
 @asynccontextmanager
@@ -45,7 +77,10 @@ async def ingest(payload: IngestPayload):
     if ok:
         return {"status": "queued"}
     # Fallback: process synchronously if SQS unavailable (e.g. dev without SQS_QUEUE_URL)
-    await insert_sensor_snapshots(payload_dict.get("readings", {}), payload_dict.get("timestamp", ""))
+    try:
+        await insert_sensor_snapshots(payload_dict.get("readings", {}), payload_dict.get("timestamp", ""))
+    except Exception as e:
+        raise _aws_backend_error(e) from e
     return {"status": "processed"}
 
 
@@ -58,14 +93,19 @@ async def get_queue_length():
 @app.get("/api/sensors/latest")
 async def sensors_latest():
     """Latest value per sensor type for dashboard."""
-    data = await get_latest_by_sensor()
-    return data
+    try:
+        return await get_latest_by_sensor()
+    except Exception as e:
+        raise _aws_backend_error(e) from e
 
 
 @app.get("/api/sensors/{sensor_type}/series")
 async def sensor_series(sensor_type: str, limit: int = 200):
-    data = await get_sensor_series(sensor_type, limit=limit)
-    return {"sensor_type": sensor_type, "data": data}
+    try:
+        data = await get_sensor_series(sensor_type, limit=limit)
+        return {"sensor_type": sensor_type, "data": data}
+    except Exception as e:
+        raise _aws_backend_error(e) from e
 
 
 @app.get("/api/recommend")
@@ -86,14 +126,20 @@ async def recommend():
 async def save_recommendation(payload: RecommendationPayload):
     """Save an on-demand recommendation from the fog node."""
     payload_dict = payload.model_dump()
-    await insert_recommendation(payload_dict)
+    try:
+        await insert_recommendation(payload_dict)
+    except Exception as e:
+        raise _aws_backend_error(e) from e
     return {"status": "saved"}
 
 
 @app.get("/api/analytics/recommendation-history")
 async def recommendation_history(limit: int = 100):
     """History of on-demand recommendations (from Suggest outfit button)."""
-    return await get_recommendation_history(limit=limit)
+    try:
+        return await get_recommendation_history(limit=limit)
+    except Exception as e:
+        raise _aws_backend_error(e) from e
 
 
 @app.get("/api/health")

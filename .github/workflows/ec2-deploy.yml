@@ -91,10 +91,14 @@ jobs:
               --output text
           )
 
+          # Do not fail fast here; we want to fetch remote stdout/stderr first.
+          set +e
           aws ssm wait command-executed \
             --region "$AWS_REGION" \
             --command-id "$COMMAND_ID" \
             --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
+          WAIT_EXIT=$?
+          set -e
 
           STATUS=$(
             aws ssm get-command-invocation \
@@ -105,6 +109,10 @@ jobs:
               --output text
           )
 
+          echo "SSM command id: $COMMAND_ID"
+          echo "SSM status: $STATUS"
+          echo "Wait exit code: $WAIT_EXIT"
+          echo "----- SSM STDOUT -----"
           aws ssm get-command-invocation \
             --region "$AWS_REGION" \
             --command-id "$COMMAND_ID" \
@@ -112,7 +120,8 @@ jobs:
             --query "StandardOutputContent" \
             --output text
 
-          if [ "$STATUS" != "Success" ]; then
+          if [ "$STATUS" != "Success" ] || [ "$WAIT_EXIT" -ne 0 ]; then
+            echo "----- SSM STDERR -----" >&2
             aws ssm get-command-invocation \
               --region "$AWS_REGION" \
               --command-id "$COMMAND_ID" \

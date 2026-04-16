@@ -80,8 +80,9 @@ jobs:
               --comment "Deploy smart-outfit from ${GITHUB_SHA}" \
               --parameters commands='[
                 "set -e",
+                "export HOME=/root",
+                "sudo git config --system --add safe.directory /opt/smart-outfit || true",
                 "if [ ! -d /opt/smart-outfit/.git ]; then sudo rm -rf /opt/smart-outfit && sudo mkdir -p /opt/smart-outfit && sudo chown ubuntu:ubuntu /opt/smart-outfit && git clone '"${REPO_URL}"' /opt/smart-outfit; fi",
-                "git config --global --add safe.directory /opt/smart-outfit || true",
                 "cd /opt/smart-outfit",
                 "git fetch --all --prune",
                 "git checkout -f '"${GITHUB_SHA}"'",

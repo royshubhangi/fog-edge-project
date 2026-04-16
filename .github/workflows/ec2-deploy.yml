@@ -1,0 +1,127 @@
+name: CI and Deploy to EC2 (SSM)
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "cloud-backend/**"
+      - "fog-node/**"
+      - "sensors/**"
+      - "deploy/ec2/**"
+      - ".github/workflows/ec2-deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cloud-backend/**"
+      - "fog-node/**"
+      - "sensors/**"
+      - "deploy/ec2/**"
+      - ".github/workflows/ec2-deploy.yml"
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  ci-build:
+    name: CI - Docker build smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build cloud-backend
+        run: docker build -t cloud-backend:ci ./cloud-backend
+
+      - name: Build fog-node
+        run: docker build -t fog-node:ci ./fog-node
+
+      - name: Build sensors
+        run: docker build -t sensors:ci ./sensors
+
+  deploy-ec2:
+    name: CD - Deploy on EC2 via SSM
+    needs: ci-build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate required EC2 secret
+        run: |
+          if [ -z "${{ secrets.EC2_INSTANCE_ID }}" ]; then
+            echo "Missing required secret: EC2_INSTANCE_ID" >&2
+            exit 1
+          fi
+
+      - name: Ensure instance is managed by SSM
+        run: |
+          aws ssm describe-instance-information \
+            --region "$AWS_REGION" \
+            --query "InstanceInformationList[?InstanceId=='${{ secrets.EC2_INSTANCE_ID }}'].InstanceId" \
+            --output text | grep -q "${{ secrets.EC2_INSTANCE_ID }}"
+
+      - name: Deploy on EC2 via AWS-RunShellScript
+        env:
+          REPO_URL: https://github.com/${{ github.repository }}.git
+        run: |
+          COMMAND_ID=$(
+            aws ssm send-command \
+              --region "$AWS_REGION" \
+              --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+              --document-name "AWS-RunShellScript" \
+              --comment "Deploy smart-outfit from ${GITHUB_SHA}" \
+              --parameters commands='[
+                "set -e",
+                "if [ ! -d /opt/smart-outfit/.git ]; then sudo rm -rf /opt/smart-outfit && sudo mkdir -p /opt/smart-outfit && sudo chown ubuntu:ubuntu /opt/smart-outfit && git clone '"${REPO_URL}"' /opt/smart-outfit; fi",
+                "cd /opt/smart-outfit",
+                "git fetch --all --prune",
+                "git checkout -f '"${GITHUB_SHA}"'",
+                "chmod +x deploy/ec2/deploy-ec2.sh",
+                "./deploy/ec2/deploy-ec2.sh"
+              ]' \
+              --query "Command.CommandId" \
+              --output text
+          )
+
+          aws ssm wait command-executed \
+            --region "$AWS_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
+
+          STATUS=$(
+            aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$COMMAND_ID" \
+              --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+              --query "Status" \
+              --output text
+          )
+
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+            --query "StandardOutputContent" \
+            --output text
+
+          if [ "$STATUS" != "Success" ]; then
+            aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$COMMAND_ID" \
+              --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+              --query "StandardErrorContent" \
+              --output text >&2
+            exit 1
+          fi
+
+      - name: Verify deployment health
+        run: |
+          curl -fsS "http://${{ secrets.EC2_PUBLIC_HOST }}/api/health"

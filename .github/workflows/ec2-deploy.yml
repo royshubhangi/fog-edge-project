@@ -28,13 +28,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Build cloud-backend
         run: docker build -t cloud-backend:ci ./cloud-backend
-
       - name: Build fog-node
         run: docker build -t fog-node:ci ./fog-node
-
       - name: Build sensors
         run: docker build -t sensors:ci ./sensors
 
@@ -54,103 +51,139 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Validate required EC2 secret
+      - name: Validate required secrets
+        env:
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          EC2_PUBLIC_HOST: ${{ secrets.EC2_PUBLIC_HOST }}
+          APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
         run: |
-          if [ -z "${{ secrets.EC2_INSTANCE_ID }}" ]; then
-            echo "Missing required secret: EC2_INSTANCE_ID" >&2
-            exit 1
-          fi
+          missing=0
+          [ -z "$EC2_INSTANCE_ID" ] && echo "Missing: EC2_INSTANCE_ID" >&2 && missing=1
+          [ -z "$EC2_PUBLIC_HOST" ] && echo "Missing: EC2_PUBLIC_HOST" >&2 && missing=1
+          [ -z "$APP_ENV_FILE" ] && echo "Missing: APP_ENV_FILE" >&2 && missing=1
+          [ "$missing" -eq 1 ] && exit 1
+          echo "All required secrets present."
 
       - name: Ensure instance is managed by SSM
+        env:
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
         run: |
           aws ssm describe-instance-information \
             --region "$AWS_REGION" \
-            --query "InstanceInformationList[?InstanceId=='${{ secrets.EC2_INSTANCE_ID }}'].InstanceId" \
-            --output text | grep -q "${{ secrets.EC2_INSTANCE_ID }}"
+            --query "InstanceInformationList[?InstanceId=='$EC2_INSTANCE_ID'].InstanceId" \
+            --output text | grep -q "$EC2_INSTANCE_ID"
 
-      - name: Push .env to EC2 via SSM Parameter Store (temporary)
+      - name: Publish .env to SSM Parameter Store
         env:
-          APP_ENV_CONTENT: ${{ secrets.APP_ENV_FILE }}
+          APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
         run: |
-          if [ -z "$APP_ENV_CONTENT" ]; then
-            echo "Missing required secret: APP_ENV_FILE" >&2
-            exit 1
-          fi
           aws ssm put-parameter \
             --region "$AWS_REGION" \
             --name "/smart-outfit/app/env" \
-            --type SecureString \
+            --type String \
             --overwrite \
-            --value "$APP_ENV_CONTENT" >/dev/null
+            --value "$APP_ENV_FILE" >/dev/null
+          echo "Parameter written."
 
-      - name: Deploy on EC2 via AWS-RunShellScript
+      - name: Build SSM commands payload
         env:
           REPO_URL: https://github.com/${{ github.repository }}.git
         run: |
-          COMMAND_ID=$(
-            aws ssm send-command \
-              --region "$AWS_REGION" \
-              --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
-              --document-name "AWS-RunShellScript" \
-              --comment "Deploy smart-outfit from ${GITHUB_SHA}" \
-              --parameters commands='[
-                "set -e",
-                "export HOME=/root",
-                "sudo git config --system --add safe.directory /opt/smart-outfit || true",
-                "if [ ! -d /opt/smart-outfit/.git ]; then sudo rm -rf /opt/smart-outfit && sudo mkdir -p /opt/smart-outfit && sudo chown ubuntu:ubuntu /opt/smart-outfit && git clone '"${REPO_URL}"' /opt/smart-outfit; fi",
-                "cd /opt/smart-outfit",
-                "git fetch --all --prune",
-                "git checkout -f '"${GITHUB_SHA}"'",
-                "sudo aws ssm get-parameter --with-decryption --region '"${AWS_REGION}"' --name /smart-outfit/app/env --query Parameter.Value --output text | sudo tee /opt/smart-outfit/.env >/dev/null",
-                "sudo chown ubuntu:ubuntu /opt/smart-outfit/.env",
-                "sudo chmod 600 /opt/smart-outfit/.env",
-                "chmod +x deploy/ec2/deploy-ec2.sh",
-                "./deploy/ec2/deploy-ec2.sh"
-              ]' \
-              --query "Command.CommandId" \
-              --output text
-          )
+          mkdir -p .ci
+          cat > .ci/commands.json <<EOF
+          {
+            "commands": [
+              "set -eu",
+              "export HOME=/root",
+              "sudo git config --system --add safe.directory /opt/smart-outfit || true",
+              "if [ ! -d /opt/smart-outfit/.git ]; then sudo rm -rf /opt/smart-outfit && sudo mkdir -p /opt/smart-outfit && sudo chown ubuntu:ubuntu /opt/smart-outfit && sudo -u ubuntu git clone ${REPO_URL} /opt/smart-outfit; fi",
+              "cd /opt/smart-outfit",
+              "sudo -u ubuntu git fetch --all --prune",
+              "sudo -u ubuntu git checkout -f ${GITHUB_SHA}",
+              "sudo aws ssm get-parameter --region ${AWS_REGION} --name /smart-outfit/app/env --query Parameter.Value --output text > /tmp/smart-outfit.env",
+              "sudo install -m 600 -o ubuntu -g ubuntu /tmp/smart-outfit.env /opt/smart-outfit/.env",
+              "sudo rm -f /tmp/smart-outfit.env",
+              "sudo chmod +x deploy/ec2/deploy-ec2.sh",
+              "sudo -u ubuntu bash -lc 'cd /opt/smart-outfit && ./deploy/ec2/deploy-ec2.sh'"
+            ]
+          }
+          EOF
+          echo "commands.json contents:" && cat .ci/commands.json
 
-          # Do not fail fast here; we want to fetch remote stdout/stderr first.
+      - name: Deploy on EC2 via AWS-RunShellScript
+        env:
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+        run: |
+          set -e
+          COMMAND_ID=$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy smart-outfit ${GITHUB_SHA}" \
+            --cli-input-json "$(jq -n --argjson p "$(cat .ci/commands.json)" '{DocumentName:"AWS-RunShellScript",Parameters:$p,InstanceIds:[env.EC2_INSTANCE_ID]}')" \
+            --query "Command.CommandId" \
+            --output text 2>/dev/null) || true
+
+          if [ -z "$COMMAND_ID" ] || [ "$COMMAND_ID" = "None" ]; then
+            # Fallback to passing parameters via --parameters file://
+            COMMAND_ID=$(aws ssm send-command \
+              --region "$AWS_REGION" \
+              --instance-ids "$EC2_INSTANCE_ID" \
+              --document-name "AWS-RunShellScript" \
+              --comment "Deploy smart-outfit ${GITHUB_SHA}" \
+              --parameters "file://.ci/commands.json" \
+              --query "Command.CommandId" \
+              --output text)
+          fi
+
+          echo "Dispatched SSM command: $COMMAND_ID"
+
           set +e
           aws ssm wait command-executed \
             --region "$AWS_REGION" \
             --command-id "$COMMAND_ID" \
-            --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
+            --instance-id "$EC2_INSTANCE_ID"
           WAIT_EXIT=$?
           set -e
 
-          STATUS=$(
-            aws ssm get-command-invocation \
-              --region "$AWS_REGION" \
-              --command-id "$COMMAND_ID" \
-              --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
-              --query "Status" \
-              --output text
-          )
+          STATUS=$(aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query "Status" \
+            --output text)
 
-          echo "SSM command id: $COMMAND_ID"
-          echo "SSM status: $STATUS"
-          echo "Wait exit code: $WAIT_EXIT"
+          echo "SSM status: $STATUS (wait exit $WAIT_EXIT)"
           echo "----- SSM STDOUT -----"
           aws ssm get-command-invocation \
             --region "$AWS_REGION" \
             --command-id "$COMMAND_ID" \
-            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+            --instance-id "$EC2_INSTANCE_ID" \
             --query "StandardOutputContent" \
-            --output text
+            --output text || true
+
+          echo "----- SSM STDERR -----"
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query "StandardErrorContent" \
+            --output text || true
 
           if [ "$STATUS" != "Success" ] || [ "$WAIT_EXIT" -ne 0 ]; then
-            echo "----- SSM STDERR -----" >&2
-            aws ssm get-command-invocation \
-              --region "$AWS_REGION" \
-              --command-id "$COMMAND_ID" \
-              --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
-              --query "StandardErrorContent" \
-              --output text >&2
             exit 1
           fi
 
       - name: Verify deployment health
+        env:
+          EC2_PUBLIC_HOST: ${{ secrets.EC2_PUBLIC_HOST }}
         run: |
-          curl -fsS "http://${{ secrets.EC2_PUBLIC_HOST }}/api/health"
+          for i in 1 2 3 4 5; do
+            if curl -fsS "http://$EC2_PUBLIC_HOST/api/health" > /dev/null; then
+              echo "Healthy."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Service health check failed after retries" >&2
+          exit 1

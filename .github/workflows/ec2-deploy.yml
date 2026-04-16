@@ -1,0 +1,78 @@
+name: CI and Deploy to EC2
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "cloud-backend/**"
+      - "fog-node/**"
+      - "sensors/**"
+      - "deploy/ec2/**"
+      - ".github/workflows/ec2-deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cloud-backend/**"
+      - "fog-node/**"
+      - "sensors/**"
+      - "deploy/ec2/**"
+      - ".github/workflows/ec2-deploy.yml"
+  workflow_dispatch:
+
+jobs:
+  ci-build:
+    name: CI - Docker build smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build cloud-backend
+        run: docker build -t cloud-backend:ci ./cloud-backend
+
+      - name: Build fog-node
+        run: docker build -t fog-node:ci ./fog-node
+
+      - name: Build sensors
+        run: docker build -t sensors:ci ./sensors
+
+  deploy-ec2:
+    name: CD - Rsync and deploy on EC2
+    needs: ci-build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH key
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s" "$EC2_SSH_KEY" > ~/.ssh/ec2_key.pem
+          chmod 600 ~/.ssh/ec2_key.pem
+          ssh-keyscan -p "${{ secrets.EC2_SSH_PORT || '22' }}" "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Ensure remote app directory exists
+        run: |
+          ssh -i ~/.ssh/ec2_key.pem -p "${{ secrets.EC2_SSH_PORT || '22' }}" \
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
+            "sudo mkdir -p /opt/smart-outfit && sudo chown -R ${{ secrets.EC2_USER }}:${{ secrets.EC2_USER }} /opt/smart-outfit"
+
+      - name: Sync source code to EC2
+        run: |
+          rsync -avz --delete \
+            --exclude ".git" \
+            --exclude "*.pem" \
+            --exclude ".env" \
+            -e "ssh -i ~/.ssh/ec2_key.pem -p ${{ secrets.EC2_SSH_PORT || '22' }}" \
+            ./ "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/smart-outfit/"
+
+      - name: Run deployment script on EC2
+        run: |
+          ssh -i ~/.ssh/ec2_key.pem -p "${{ secrets.EC2_SSH_PORT || '22' }}" \
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
+            "cd /opt/smart-outfit && chmod +x deploy/ec2/deploy-ec2.sh && ./deploy/ec2/deploy-ec2.sh"
+
+      - name: Verify deployment health
+        run: |
+          curl -fsS "http://${{ secrets.EC2_HOST }}/api/health"

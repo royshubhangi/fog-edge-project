@@ -95,6 +95,7 @@ jobs:
             "commands": [
               "set -eu",
               "export HOME=/root",
+              "if ! command -v aws >/dev/null 2>&1; then sudo DEBIAN_FRONTEND=noninteractive apt-get update -y && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y unzip curl; curl -sSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip; sudo unzip -q -o /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install --update; rm -rf /tmp/aws /tmp/awscliv2.zip; fi",
               "sudo mkdir -p /opt/smart-outfit",
               "sudo chown -R ubuntu:ubuntu /opt/smart-outfit",
               "sudo git config --system --add safe.directory /opt/smart-outfit || true",
@@ -103,7 +104,7 @@ jobs:
               "cd /opt/smart-outfit",
               "sudo -u ubuntu git fetch --all --prune",
               "sudo -u ubuntu git checkout -f ${GITHUB_SHA}",
-              "sudo aws ssm get-parameter --region ${AWS_REGION} --name /smart-outfit/app/env --query Parameter.Value --output text > /tmp/smart-outfit.env",
+              "sudo /usr/local/bin/aws ssm get-parameter --region ${AWS_REGION} --name /smart-outfit/app/env --query Parameter.Value --output text > /tmp/smart-outfit.env",
               "sudo install -m 600 -o ubuntu -g ubuntu /tmp/smart-outfit.env /opt/smart-outfit/.env",
               "sudo rm -f /tmp/smart-outfit.env",
               "sudo chmod +x /opt/smart-outfit/deploy/ec2/deploy-ec2.sh",

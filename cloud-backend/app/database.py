@@ -2,7 +2,6 @@
 DynamoDB store for recommendations and sensor snapshots.
 Tables: outfit-recommendations (PK, SK), outfit-sensor-snapshots (sensor_type, ts).
 """
-import asyncio
 import aioboto3
 import logging
 import os
@@ -20,7 +19,7 @@ SENSOR_TYPES = [
     s.strip()
     for s in os.environ.get(
         "SENSOR_TYPES",
-        "outdoor_temperature,humidity,uv_index,air_quality,activity_level",
+        "temperature,humidity,uv_index,air_quality,activity",
     ).split(",")
     if s.strip()
 ]
@@ -176,11 +175,15 @@ async def get_sensor_series(sensor_type: str, limit: int = 200) -> List[Dict]:
 
 
 async def get_latest_by_sensor() -> Dict[str, Any]:
-    """Latest value per sensor type via key query (fast path)."""
+    """Latest value per sensor type.
+
+    Keep lookups sequential to avoid intermittent hangs observed with multiple
+    concurrent aioboto3 table queries in the same request lifecycle.
+    """
     dynamo = await _get_dynamo()
     table = await dynamo.Table(TABLE_SENSORS)
-
-    async def _query_latest(sensor_type: str):
+    latest: Dict[str, Any] = {}
+    for sensor_type in SENSOR_TYPES:
         resp = await table.query(
             KeyConditionExpression="sensor_type = :st",
             ExpressionAttributeValues={":st": sensor_type},
@@ -189,13 +192,11 @@ async def get_latest_by_sensor() -> Dict[str, Any]:
         )
         items = resp.get("Items", [])
         if not items:
-            return sensor_type, None
+            continue
         row = items[0]
-        return sensor_type, {
+        latest[sensor_type] = {
             "value": str(row.get("value") or ""),
             "unit": str(row.get("unit") or ""),
             "ts": str(row.get("ts") or ""),
         }
-
-    results = await asyncio.gather(*[_query_latest(sensor_type) for sensor_type in SENSOR_TYPES])
-    return {sensor_type: data for sensor_type, data in results if data is not None}
+    return latest

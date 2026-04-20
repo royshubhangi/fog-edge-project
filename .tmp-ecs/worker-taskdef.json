@@ -1,9 +1,7 @@
 {
   "family": "smart-outfit-worker",
   "networkMode": "awsvpc",
-  "requiresCompatibilities": [
-    "FARGATE"
-  ],
+  "requiresCompatibilities": ["FARGATE"],
   "cpu": "256",
   "memory": "512",
   "executionRoleArn": "arn:aws:iam::121332300574:role/LabRole",
@@ -13,29 +11,8 @@
       "name": "worker",
       "image": "121332300574.dkr.ecr.us-east-1.amazonaws.com/smart-outfit/cloud-backend:latest",
       "essential": true,
-      "command": [
-        "python",
-        "-m",
-        "app.worker"
-      ],
-      "environment": [
-        {
-          "name": "AWS_REGION",
-          "value": "us-east-1"
-        },
-        {
-          "name": "SQS_QUEUE_URL",
-          "value": "https://sqs.us-east-1.amazonaws.com/121332300574/outfit-ingest-queue"
-        },
-        {
-          "name": "DYNAMODB_TABLE_RECOMMENDATIONS",
-          "value": "outfit-recommendations"
-        },
-        {
-          "name": "DYNAMODB_TABLE_SENSORS",
-          "value": "outfit-sensor-snapshots"
-        }
-      ],
+      "command": ["python","-m","app.worker"],
+      "environment": [{"name":"AWS_REGION","value":"us-east-1"},{"name":"SQS_QUEUE_URL","value":"https://sqs.us-east-1.amazonaws.com/121332300574/outfit-ingest-queue"},{"name":"DYNAMODB_TABLE_RECOMMENDATIONS","value":"outfit-recommendations"},{"name":"DYNAMODB_TABLE_SENSORS","value":"outfit-sensor-snapshots"}],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {

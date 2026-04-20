@@ -19,6 +19,8 @@ A **Fog and Edge** style cloud application: sensors → fog node(s) → cloud ba
    frequency/dispatch      (when user clicks)             Dashboard + Suggest outfit
 ```
 
+> Detailed architecture diagrams (logical view, ingest / recommendation sequence flows, and AWS deployment view) are in [`docs/architecture.md`](docs/architecture.md).
+
 ### Sensor layer
 - **5 sensor types**: outdoor temperature, humidity, UV index, air quality, user activity level.
 - **Configurable**: read interval, dispatch interval, batch size per sensor (see `sensors/config.yaml`).
@@ -125,6 +127,7 @@ All data will flow automatically. You can view the dashboard at http://localhost
 
 - **Azure**: see [deploy/azure-container-apps.md](deploy/azure-container-apps.md) (Container Apps, Redis, optional autoscaling).
 - **AWS**: see [deploy/aws-ecs.md](deploy/aws-ecs.md) (ECS Fargate, SQS).
+- **AWS quick bootstrap (ECS + ALB)**: see [deploy/ecs/README.md](deploy/ecs/README.md) and run `bash deploy/ecs/start-ecs-alb.sh`.
 - **AWS low-cost option (EC2 + Nginx)**: see [deploy/ec2/README.md](deploy/ec2/README.md).
 
 The design (queue + workers, stateless API) supports horizontal scaling and FaaS (e.g. Azure Functions or Lambda for ingest/worker).
